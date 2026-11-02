@@ -1,66 +1,48 @@
-# Warden
+# Tartarus-Solver-Mobile-warden-port
 
-A Windows companion app for the Tartarus prison board (season 16) of *Torchlight: Infinite*. Warden watches the game window, reads the board from the screen, and shows the move it recommends: which destination to take, which Inmate to consume or replace, which Torture Instrument or Warden's Treasure reward to pick, and when to re-roll an instrument offer.
+Android port of [arcasti/tli-warden](https://github.com/arcasti/tli-warden) — a live
+advisor for the Tartarus prison board in *Torchlight: Infinite*.
 
-Unofficial. Not affiliated with or endorsed by the developers or publishers of *Torchlight: Infinite*. Warden only reads pixels from the game window: it never touches the game's memory, files or network traffic, and it never clicks or types for you.
+The game runs on the phone. The app captures the screen with MediaProjection, reads
+the board, runs the Rust solver core, and draws the recommended move as a
+touch-through overlay above the game.
 
-## Requirements
+## Layout
 
-- Windows 10 or 11.
-- The game at 16:9 or wider (1920 x 1080, 2560 x 1080 and so on): fullscreen, borderless or windowed, maximized or not. Windows narrower than 16:9 are not read: the Board tab says why above the last reading and marks it "last reading".
-- Any interface scale. Warden measures it from the gate icon and the back arrow, and keeps the last measured scale for screens that show neither, such as the Riot. Scales above the default have not been tested yet.
-- The English Windows OCR language. Warden reads the days counter, the destination cards and the panels with it. If the Board tab says English OCR is missing, open PowerShell as administrator and run:
-
-  ```powershell
-  Add-WindowsCapability -Online -Name "Language.OCR~~~en-US~0.0.1.0"
-  ```
-
-  Then restart Warden.
-
-## Use
-
-Download `warden.exe` from the [latest release](https://github.com/arcasti/tli-warden/releases/latest) and run it. It offers to install itself for the current Windows user, with a Start menu entry, a desktop shortcut and an entry in Apps & features, and no admin rights; say Not now and it runs from wherever it is, with an Install button left in the settings. At start it asks GitHub for a newer release and, when there is one, shows an Update button, which downloads the new `warden.exe`, checks it against the SHA-256 GitHub lists for it, and restarts Warden on it. The check can be turned off in the settings. Uninstall in Apps & features removes the program and keeps `%APPDATA%\warden`.
-
-Then play. The window stays on top of the game. It moves under the game's instrument panel when the game is first found; once you move it, it opens where you left it.
-
-- Auto read (on by default) captures the game window whenever the screen changes and reads it. F8 turns it on or off and F9 reads once, but both only work while the game is not focused, because the game swallows key presses.
-- The Board tab shows the ring of cells as read, the recommended move in the middle, and under the day the run's objective with its progress ("Undercurrents 1/2"), which the advice plays toward. The reader's warnings show above the board, and under it the three best moves by the mean Riot loot over the playouts: each Inmate left at the Riot and each vaulted Chromatic yields a Warden's Cache of its rarity, weighted Chromatic 1, Ultimate 0.2 and Legendary 0.05. Click a cell to correct a misread one. While a game panel covers the board, such as the Chromatic reward after a Chromatic is vaulted, the Board tab keeps the last reading: close the panel and Warden reads the cells again.
-- The Run tab lists the Torture Instruments you hold and the run's theme. Warden follows both from the game; set them there if a read missed one.
-- "Highlight where to click" (off by default) marks the advised move on the game itself: gold corner brackets around the cell, card or button to click, with an arrow above it. The mark lets clicks through to the game and hides once you click the target, until the screen, the board or the advice changes.
-
-Settings are in `%APPDATA%\warden\settings.json`.
-
-## Run logs
-
-Each run gets a folder in `%APPDATA%\warden\runs` (the newest 10 are kept) with `log.jsonl`, one JSON line per read, advice and correction, and `frame-NNNN.jpg`, the game frames behind the reads. To report a wrong read or a bad recommendation, zip that run's folder and send it.
-
-Warden asks once whether to share run logs. With sharing on, each finished run's log goes to warden.arcasti.dev: the board reads, the advice, the corrections, the game window's size and the OCR language, with the app version and a random install id. It never sends the screenshots or frames, window titles, or anything outside the run log. A run is sent when it ends, and at start Warden sends the runs not sent yet; only runs started after sharing was turned on go. To stop sharing, clear "Share run logs" in Settings.
+| Path | What it is |
+| --- | --- |
+| `src/` | Rust core (reader, solver, app state), plus `src/jni.rs` for Android |
+| `android/` | Gradle project; Kotlin UI, capture service, overlay |
+| `assets/`, `data/`, `docs/` | Board data, assets, notes |
+| `tests/`, `examples/` | Tests and developer tools |
 
 ## Build
 
-Needs Rust (edition 2024) and the Windows SDK's `rc.exe`, which the Visual Studio Build Tools install, to build the icon into `warden.exe`.
+The Kotlin app loads `libwarden.so`, which is cross-compiled with cargo-ndk and
+placed in `android/app/src/main/jniLibs/`.
 
-```powershell
-cargo build --release --bin warden        # target\release\warden.exe
-cargo build --release --bin warden-cli    # the command line: solve, read, capture, bench
-cargo test --profile fast-test
+```sh
+# Rust core for the phone (arm64-v8a)
+cargo ndk -t arm64-v8a -P 26 -o build/android build --lib --profile android-release
+
+# APK
+JAVA_HOME="/Applications/Android Studio.app/Contents/jbr/Contents/Home" \
+  gradle -p android assembleDebug
 ```
 
-`warden-cli read <frame.png>` reads a saved screenshot and prints the board model, and `warden-cli solve <frame.png | board.json>` ranks the moves. `warden-cli bench --strategy-only --set w_step=0` plays 2000 runs with the strategy alone on the tuned weights and on the changed ones, and prints the Chromatics per run of each and the difference paired by run. `--hold guillotine` starts every run holding that instrument, `--rerolls 1` gives every run one instrument re-roll, and `--save file` on one build with `--against file` on another prints the paired difference between the two builds. The strategy tests compare 20 games and the solver's rankings in them with snapshots in `tests/fixtures`; after a deliberate strategy change, rerun `WARDEN_RECORD=1 cargo test --profile fast-test --test decide --test solve` to re-record them and review the fixture diff. The reader tests that need game screenshots look for them in `trainingdata/s16` and skip when it is missing; the screenshots are not in the repository.
+`ANDROID_NDK_HOME` must point at an installed NDK. A `buildRust` Gradle task runs
+the cargo-ndk step automatically as part of `preBuild`.
 
-## How it works
+A release build reads signing material from `keystore/signing.properties`; that file
+and the keystore are intentionally not in this repository. Without them, use
+`assembleDebug` — `assembleRelease` has no signing material to work with.
 
-- `src/engine`: the board rules, from the game's client data (`data/warden-data.json`).
-- `src/solver`: the strategy and the playouts that rank the moves.
-- `src/reader`: the screen reader. Pixel templates find cells, beasts, rarities and the warden; Windows OCR reads the text.
-- `src/app`: the window, the game capture (Windows Graphics Capture), auto read and the run log.
+## Status
 
-`docs/s16-screen.md` describes the prison screen as the reader sees it.
-
-## More tools
-
-Other Torchlight: Infinite tools are on [arcasti.dev](https://arcasti.dev/).
+P0–P5 of the port are implemented and were verified on a physical device against
+the live game: capture, OCR, board reconstruction, solver advice, and the marker
+overlay.
 
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE).
+GPL-3.0-only, inherited from the upstream project. See `LICENSE`.
