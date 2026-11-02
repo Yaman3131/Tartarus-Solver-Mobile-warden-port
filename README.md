@@ -7,6 +7,20 @@ The game runs on the phone. The app captures the screen with MediaProjection, re
 the board, runs the Rust solver core, and draws the recommended move as a
 touch-through overlay above the game.
 
+<img width="1280" height="841" alt="photo_2026-11-03 00 16 46" src="https://github.com/user-attachments/assets/e55ecc29-315b-4037-94c0-7f5a16e64ee6" />
+<img width="1280" height="841" alt="photo_2026-11-03 00 17 00" src="https://github.com/user-attachments/assets/0f0bee46-81ae-46f8-9070-1e4dce9bee57" />
+<img width="1280" height="841" alt="photo_2026-11-03 00 16 57" src="https://github.com/user-attachments/assets/11e0e231-358f-4320-b240-ce9d9ae697d0" />
+<img width="1280" height="841" alt="photo_2026-11-03 00 16 54" src="https://github.com/user-attachments/assets/12bf27d3-1a9b-4429-9928-b8ffc209c02e" />
+<img width="1280" height="841" alt="photo_2026-11-03 00 16 51" src="https://github.com/user-attachments/assets/1a94571e-83f9-4c1a-8edb-e0cf22edce58" />
+
+
+
+
+
+
+
+
+
 ## Layout
 
 | Path | What it is |
