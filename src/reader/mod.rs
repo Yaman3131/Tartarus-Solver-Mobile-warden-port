@@ -102,7 +102,7 @@ impl Rgba {
 }
 
 /// Decodes a PNG into RGBA at its own size.
-fn decode_png_raw(bytes: &[u8]) -> Result<Rgba, String> {
+pub fn decode_png_raw(bytes: &[u8]) -> Result<Rgba, String> {
     let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());
     let mut reader = decoder.read_info().map_err(|e| e.to_string())?;
@@ -127,10 +127,17 @@ pub fn load_png(path: &Path) -> Result<Rgba, String> {
 }
 
 /// Loads a PNG file at the reference size, in the board layout and, when it
-/// differs, the title layout; see [`layout::lay_out_scaled`].
+/// differs, the title layout; see [`layout::lay_out_scaled`]. A frame
+/// narrower than 16:9 (a phone in landscape) is first cropped to the game's
+/// letterboxed 16:9 canvas; see [`layout::content_rect`]. The crop's offset
+/// is not kept: the CLI paths this serves do not map back to frame pixels.
 fn load_layouts(path: &Path) -> Result<(Rgba, Option<Rgba>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let img = decode_png_raw(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let img = match layout::content_rect(&img) {
+        Some(r) => img.crop(r),
+        None => img,
+    };
     let (board, title, _) = layout::lay_out_scaled(&img, None);
     Ok((board, title))
 }

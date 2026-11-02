@@ -7,9 +7,9 @@ use crate::engine::data::{Beast, Gift, IRON_LAW, RAINBOW, Tool, VAULT_CAP, data}
 use crate::engine::rules::treasure_picks;
 use crate::engine::text::{cell_label, cell_list, tier_name, tool_name};
 use crate::reader::model::{RUN_DAYS, Warning, WarningKind, iron_law_days, to_model};
-use crate::reader::panels::{Panels, Screen, read_panels_titled};
+use crate::reader::panels::{Panels, Screen, read_panels_titled_days};
 use crate::reader::scene::{CELLS, Scene, read_scene};
-use crate::reader::layout::{is_16_9, lay_out_scaled};
+use crate::reader::layout::{is_16_9, lay_out_scaled, narrow_hud};
 use crate::reader::click;
 use crate::reader::{REF_H, REF_W, Rgba};
 use crate::solver::TUNED;
@@ -341,7 +341,13 @@ enum Taken {
 fn scan(frame: Rgba, keep: bool, hint: Option<f32>) -> Scanned {
     let size = (frame.w, frame.h);
     let (f, title, u) = lay_out_scaled(&frame, hint);
-    let (scene, panels) = (read_scene(&f), read_panels_titled(&f, title.as_ref().unwrap_or(&f)));
+    // A narrow (phone) frame keeps its board and cards at the centre but
+    // pins the top bar to the window's top: the days counter comes from a
+    // top-aligned copy (see `narrow_hud`), the rest from the centred frame.
+    let hud = narrow_hud(&frame);
+    let title = title.unwrap_or_else(|| hud.clone().unwrap_or_else(|| f.clone()));
+    let panels = read_panels_titled_days(&f, &title, hud.as_ref().unwrap_or(&f));
+    let scene = read_scene(&f);
     (scene, panels, size, keep.then_some(frame), u)
 }
 
@@ -349,12 +355,14 @@ fn scan(frame: Rgba, keep: bool, hint: Option<f32>) -> Scanned {
 const SHAPE: &str = "The game window is ";
 
 /// A window as wide as 16:9 or wider is read: [`lay_out_scaled`] lays it out as
-/// the reference frame. A window narrower than 16:9 (by more than 1%) has
-/// never been seen, so how the game lays it out is untested: such a frame is
-/// not read.
-fn shape_line((w, h): (usize, usize)) -> Option<String> {
+/// the reference frame. A window narrower than 16:9 (by more than 1%) is not
+/// read on the desktop, where how the game lays out such a window is
+/// untested; `narrow_ok` (the mobile client, whose interface keeps the
+/// reference arrangement at the reference size) is read by width placement
+/// instead — see [`crate::reader::layout::is_narrow`].
+fn shape_line((w, h): (usize, usize), narrow_ok: bool) -> Option<String> {
     let narrow = w * 9 < h * 16 && !is_16_9(w, h);
-    narrow.then(|| format!("{SHAPE}{w} x {h}, narrower than 16:9: that layout is untested and isn't read. Set the game to a 16:9 or wider size: fullscreen or borderless, or a window such as 1920 x 1080 that is not maximized."))
+    (narrow && !narrow_ok).then(|| format!("{SHAPE}{w} x {h}, narrower than 16:9: that layout is untested and isn't read. Set the game to a 16:9 or wider size: fullscreen or borderless, or a window such as 1920 x 1080 that is not maximized."))
 }
 
 /// The fingerprint grid: 64 x 36 blocks, 30 x 30 pixels each on a 1920 x 1080 frame.
@@ -527,6 +535,11 @@ pub struct Session {
     scene: Option<(Scene, Panels, SystemTime)>,
     /// The size of the last frame read, before it was scaled.
     size: (usize, usize),
+    /// Whether a frame narrower than 16:9 is read, by width placement: the
+    /// mobile client's, whose interface keeps the reference arrangement; the
+    /// desktop app leaves this off and refuses such frames (see
+    /// [`shape_line`]).
+    narrow_ok: bool,
     /// The interface scale the last frame was read at (see
     /// [`crate::reader::layout::ui_scale`]): the next read searches near it.
     /// A game setting, so a new run keeps it.
@@ -606,6 +619,10 @@ pub struct Session {
     confirming: bool,
     /// A read was held and waits for one more, see [`Session::wants_reread`].
     reread: bool,
+    /// A board built by hand (the mobile editor's), installed as the reading
+    /// on show, and when: `build` reads it while no frame read is in, the
+    /// player's corrections applied. See [`Session::install_board`].
+    hand: Option<(Model, SystemTime)>,
     notify: Option<Arc<dyn Fn() + Send + Sync>>,
     /// The run log the session writes its reads, advice and corrections to; none by default.
     pub log: Option<RunLog>,
@@ -630,6 +647,7 @@ impl Session {
             state: None,
             scene: None,
             size: (REF_W, REF_H),
+            narrow_ok: false,
             ui_scale: None,
             days_read: None,
             days: DaysClock { left: days, higher: None },
@@ -658,6 +676,7 @@ impl Session {
             on_screen: false,
             confirming: false,
             reread: false,
+            hand: None,
             notify: None,
             log: None,
         }
@@ -781,7 +800,7 @@ impl Session {
         let (live, confirming) = (self.live, std::mem::take(&mut self.confirming));
         self.scan = None;
         self.size = size;
-        let shape = shape_line(size);
+        let shape = shape_line(size, self.narrow_ok);
         // The lobby's scroll names the coming run's theme and shows no days counter.
         if shape.is_none()
             && let Some(id) = panels.theme
@@ -989,6 +1008,8 @@ impl Session {
             _ => (scene, panels),
         };
         self.scene = Some((scene, panels, SystemTime::now()));
+        // A frame read installed: it replaces a hand-built board.
+        self.hand = None;
         // A pick kept on show is not the screen the game shows.
         self.on_screen = live && !keep_pick;
         let mut before = std::mem::take(&mut self.steady);
@@ -1116,6 +1137,11 @@ impl Session {
 
     /// Sets the held instruments (the panel shows only icons) and re-solves;
     /// the lines about the session's own changes to them go.
+    /// Reads frames narrower than 16:9 (the mobile client); see [`shape_line`].
+    pub fn set_narrow_ok(&mut self, on: bool) {
+        self.narrow_ok = on;
+    }
+
     pub fn set_tools(&mut self, tools: Vec<Tool>) {
         if let Some(log) = &self.log {
             log.event("edit", SystemTime::now(), json!({ "tools": tool_keys(&tools) }));
@@ -1142,6 +1168,34 @@ impl Session {
         if self.reading.is_some() {
             self.solve();
         }
+    }
+
+    /// A board built by hand, as the reading on show: the mobile editor's
+    /// model (see [`Model::blank`] for what it may leave out), taken as a
+    /// plain patrol board and solved like a read. The read on show goes,
+    /// with its corrections; the held instruments follow the model's. A
+    /// later frame read replaces the hand board, as a new run's day 1 does
+    /// (see [`Session::end_run`]).
+    pub fn install_board(&mut self, model: Model) {
+        self.hand = Some((model.clone(), SystemTime::now()));
+        self.run_over = None;
+        self.missed = None;
+        self.scene = None;
+        self.board = None;
+        self.consume = None;
+        self.meal = None;
+        self.chained = false;
+        self.treasure = None;
+        self.edits.clear();
+        self.markers.clear();
+        self.steady.clear();
+        self.notes.clear();
+        self.tools = model.tools.clone();
+        self.fade_kept = false;
+        self.reread = false;
+        self.confirming = false;
+        self.on_screen = false;
+        self.rebuild();
     }
 
     /// The treasure pick the running solve plays: the gifts on offer and the
@@ -1238,6 +1292,17 @@ impl Session {
 
     /// The reading of the stored read with the tools and the edits.
     fn build(&self) -> Option<Reading> {
+        // A hand-built board, while no frame read is in: a plain patrol
+        // board, the corrections applied, the instruments as they stand.
+        if self.scene.is_none()
+            && let Some((model, at)) = &self.hand
+        {
+            let mut m = model.clone();
+            m.tools = self.tools.clone();
+            self.corrected(&mut m);
+            let days_left = u32::try_from((m.max_days - m.day).max(0)).ok();
+            return Some(Reading { model: m, warnings: Vec::new(), screen: Screen::Patrol, days_left, at: *at });
+        }
         let (scene, panels, at) = self.scene.as_ref()?;
         let chains = self.tools.contains(&Tool::Chains);
         let vaulted = self.consume.as_ref().filter(|_| panels.screen == Screen::TreasurePick).and_then(|m| vaulted(m, self.meal, chains));
@@ -1289,6 +1354,12 @@ impl Session {
             warnings.extend(kept_days(self.days_read, panels.days));
         }
         warnings.extend(self.notes.iter().map(|text| Warning::note(text.clone())));
+        self.corrected(&mut model);
+        Some(Reading { model, warnings, screen: panels.screen, days_left: panels.days, at: *at })
+    }
+
+    /// The player's cell corrections and incident markers on `model`.
+    fn corrected(&self, model: &mut Model) {
         for (&cell, edit) in &self.edits {
             let n = cell as usize - 1;
             // A correction keeps the cell's incident marker and Tusk.
@@ -1310,7 +1381,6 @@ impl Session {
                 *event = on.then_some(EventMark::Unknown);
             }
         }
-        Some(Reading { model, warnings, screen: panels.screen, days_left: panels.days, at: *at })
     }
 
     /// The meal picked on the Consume target screen on show: the only target
@@ -1506,6 +1576,7 @@ impl Session {
         self.reading = None;
         self.missed = None;
         self.scene = None;
+        self.hand = None;
         self.board = None;
         self.consume = None;
         self.vault_top = None;

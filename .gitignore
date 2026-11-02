@@ -1,2 +1,21 @@
 target/
 trainingdata/
+build/
+.DS_Store
+
+.gradle/
+android/app/src/main/jniLibs/
+local.properties
+
+# The signing key and its passwords stay on this machine.
+keystore/
+# Local APK and source backups.
+backups/
+
+# Local-only: build backups, dev handoff notes, signing keys
+backups/
+HANDOFF.md
+keystore/
+*.jks
+*.keystore
+signing.properties

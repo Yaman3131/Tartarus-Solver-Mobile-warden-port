@@ -15,7 +15,7 @@ use warden::reader::{Rgba, load_png, read_model};
 use warden::reader::model::WarningKind;
 use warden::reader::panels::Screen;
 use warden::solver::TUNED;
-use warden::solver::solve::{Rollouts, solve};
+use warden::solver::solve::{Rollouts, instant, solve};
 
 const ROLLOUTS: usize = 400;
 
@@ -1709,4 +1709,35 @@ fn new_offer_at_the_pick_is_solved_anew() {
     s.read_in_background(frame("~rec1-t087.png"));
     s.wait();
     assert_eq!(s.tools, vec![t]);
+}
+
+/// A board built by hand, installed as the reading: the mobile editor's
+/// board, solved like a read — its pick is the one `warden-cli solve` gives
+/// for the same model — and the player's corrections apply to it, re-solving.
+#[test]
+fn hand_board_advices_like_the_cli() {
+    let inmate = |beast, tier| CellModel::Inmate { beast, tier, ivory: false, prey: None, event: None };
+    let mut board = Model::blank();
+    board.day = 5;
+    board.step = Step::Manage;
+    board.warden = 6;
+    board.cells[2] = inmate(Beast::Lion, 2);
+    board.cells[4] = CellModel::Empty { event: None };
+    board.cells[6] = inmate(Beast::Rat, 3);
+    board.cells[9] = inmate(Beast::Wolf, 1);
+    let mut s = Session::new(50, Vec::new(), None, None);
+    s.install_board(board.clone());
+    let (st, problems) = build_state(&board, 1);
+    assert!(problems.is_empty(), "{problems:?}");
+    let pick = instant(&st).expect("the cli's pick");
+    assert_eq!(s.pick.as_ref().expect("the pick").label, pick.label);
+    assert_eq!(s.reading.as_ref().unwrap().screen, Screen::Patrol);
+    assert_eq!(s.reading.as_ref().unwrap().days_left, Some(15));
+    s.wait();
+    assert!(s.advice().is_some());
+    // A correction applies to the hand board and re-solves.
+    s.edit_cell(3, CellEdit::Empty).unwrap();
+    assert_eq!(s.reading.as_ref().unwrap().model.cells[2], CellModel::Empty { event: None });
+    s.wait();
+    assert!(s.advice().is_some());
 }

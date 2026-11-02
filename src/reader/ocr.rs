@@ -4,10 +4,36 @@
 //! (one of another script, such as Russian, misreads the game).
 
 use super::{Rect, Rgba};
+use std::sync::{Arc, RwLock};
+
+/// An OCR engine the host injects in place of the platform's: Android calls
+/// Google's ML Kit. It takes the prepared inputs (each region's crop,
+/// upscaled and contrast-stretched, None for an empty region) and returns
+/// each one's lines as `(text, [x, y, w, h])` with the box in that input's
+/// own pixels — the same shape [`imp::recognize_all`] returns, so the
+/// regions' boxes are mapped back to frame pixels as before.
+pub type Backend = Arc<dyn Fn(Vec<Option<Rgba>>) -> Vec<Vec<(String, [f32; 4])>> + Send + Sync>;
+
+/// The engine [`set_backend`] installed, used instead of `imp`.
+static INJECTED: RwLock<Option<Backend>> = RwLock::new(None);
+
+/// Installs `backend` in place of the platform's OCR engine, for the rest of
+/// the process; returns the one it replaced.
+pub fn set_backend(backend: Backend) -> Option<Backend> {
+    std::mem::replace(&mut *INJECTED.write().unwrap_or_else(|e| e.into_inner()), Some(backend))
+}
+
+/// Whether a backend is installed; see [`set_backend`].
+pub fn has_backend() -> bool {
+    INJECTED.read().unwrap_or_else(|e| e.into_inner()).is_some()
+}
 
 /// The language tag the engine reads in ("en-US"); None when Windows has
 /// no OCR language installed.
 pub fn language() -> Option<String> {
+    if has_backend() {
+        return Some("en".to_string());
+    }
     imp::language()
 }
 
@@ -47,7 +73,14 @@ pub fn ocr(img: &Rgba, rect: Rect, scale: f32) -> Vec<Line> {
 /// of the same index, in order, with the regions read at the same time.
 pub fn ocr_all<const N: usize>(imgs: [&Rgba; N], regions: &[(Rect, f32); N]) -> [Vec<Line>; N] {
     let inputs: Vec<Option<Rgba>> = imgs.iter().zip(regions).map(|(img, &(rect, scale))| prepare(img, rect, scale)).collect();
-    let mut read = imp::recognize_all(inputs).into_iter();
+    // The lock is released before the call: an injected engine may take a
+    // while (a round trip through the host), and nothing else sets it.
+    let backend = INJECTED.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let mut read = match backend {
+        Some(backend) => backend(inputs),
+        None => imp::recognize_all(inputs),
+    }
+    .into_iter();
     regions.map(|(rect, scale)| {
         read.next()
             .unwrap_or_default()

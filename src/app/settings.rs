@@ -81,9 +81,20 @@ impl Default for Settings {
     }
 }
 
-/// %APPDATA%\warden, where the app keeps its files; None when APPDATA is not set.
+/// The files directory the host sets instead of `%APPDATA%`: the mobile
+/// client passes its `filesDir` once at startup (see [`set_app_dir`]).
+static APP_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Sets the app's files directory, over `%APPDATA%\warden`. The first call
+/// wins; later ones are ignored.
+pub fn set_app_dir(dir: PathBuf) {
+    let _ = APP_DIR.set(dir);
+}
+
+/// The app's files directory: [`set_app_dir`]'s when the host set one,
+/// else `%APPDATA%\warden`; None when neither is there.
 pub fn app_dir() -> Option<PathBuf> {
-    std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("warden"))
+    APP_DIR.get().cloned().or_else(|| std::env::var_os("APPDATA").map(|d| PathBuf::from(d).join("warden")))
 }
 
 impl Settings {

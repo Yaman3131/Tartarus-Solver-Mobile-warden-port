@@ -4,6 +4,7 @@
 pub mod runlog;
 pub mod session;
 pub mod settings;
+pub mod snapshot;
 #[cfg(windows)]
 pub mod share;
 #[cfg(windows)]

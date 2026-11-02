@@ -111,6 +111,13 @@ pub enum Layout {
 /// [`lay_out_title`] sample it, and the frame px per reference px there. The
 /// zone is the last one painted over `p`.
 pub fn frame_point(p: (f32, f32), layout: Layout, w: usize, h: usize, u: f32) -> ((f32, f32), f32) {
+    if u == 1.0 && is_narrow(w, h) {
+        // The inverse of `narrow_norm`: reference px by width, then the
+        // centred vertical crop.
+        let k = w as f32 / REF_W as f32;
+        let off = narrow_off(k, h) as f32;
+        return (((p.0 + 0.5) * k - 0.5, (p.1 + off + 0.5) * k - 0.5), k);
+    }
     if u == 1.0 && is_16_9(w, h) {
         let (sx, sy) = (w as f32 / REF_W as f32, h as f32 / REF_H as f32);
         return (((p.0 + 0.5) * sx - 0.5, (p.1 + 0.5) * sy - 0.5), sy);
@@ -135,6 +142,97 @@ fn source(i: f32, len: usize, a: Anchor, off: f32, u: f32, k: f32, src: usize) -
 /// Whether a `w` x `h` frame is 16:9 within 1%.
 pub fn is_16_9(w: usize, h: usize) -> bool {
     (w * 9).abs_diff(h * 16) * 100 <= h * 16
+}
+
+/// Whether a `w` x `h` frame is narrower than 16:9 by more than 1%: a phone
+/// in landscape (2800 x 1840 is 1.52:1), say. Those are laid out by width; see
+/// [`narrow_norm`].
+pub fn is_narrow(w: usize, h: usize) -> bool {
+    !is_16_9(w, h) && (w as f32 / h as f32) < (16.0 / 9.0)
+}
+
+/// How far down `narrow_norm`'s tall intermediate starts: the frame at
+/// reference width, `h` px tall, cropped to [`REF_H`] about the centre.
+fn narrow_off(k: f32, h: usize) -> usize {
+    let tall = ((h as f32 / k).round() as usize).max(REF_H);
+    (tall - REF_H) / 2
+}
+
+/// A frame narrower than 16:9 placed on the reference frame: scaled by width
+/// (k = w / 1918) so the board and the cell ring keep their reference size,
+/// then cropped to the reference height about the centre. None for a 16:9 or
+/// wider frame, which [`lay_out`] handles as before.
+///
+/// The interface of the mobile client keeps the PC client's arrangement —
+/// the same top bar, cell ring, destination cards and Quick Action — at the
+/// reference size, so the mobile frame needs no zone layout, only this
+/// placement. Measured on a 2800 x 1840 Tartarus frame: mean cell-read
+/// confidence 0.98 against 0.58 for the zone layout at u = 1.
+fn narrow_norm(frame: &Rgba) -> Option<Rgba> {
+    if !is_narrow(frame.w, frame.h) {
+        return None;
+    }
+    let k = frame.w as f32 / REF_W as f32;
+    let tall = (frame.h as f32 / k).round() as usize;
+    let wide = frame.resize(REF_W, tall.max(REF_H));
+    Some(wide.crop(Rect::new(0, narrow_off(k, frame.h) as i32, REF_W as i32, REF_H as i32)))
+}
+
+/// The mobile frame's HUD at reference coordinates: scaled by width and
+/// cropped to the reference height from the top. The game pins its top bar
+/// and destination cards to the window's top and bottom edges while the
+/// board itself sits at the centre (see [`narrow_norm`]), so the panels are
+/// read from this instead of the centred quad.
+pub fn narrow_hud(frame: &Rgba) -> Option<Rgba> {
+    if !is_narrow(frame.w, frame.h) {
+        return None;
+    }
+    let k = frame.w as f32 / REF_W as f32;
+    let tall = (frame.h as f32 / k).round() as usize;
+    let wide = frame.resize(REF_W, tall.max(REF_H));
+    Some(wide.crop(Rect::new(0, 0, REF_W as i32, REF_H as i32)))
+}
+
+/// The luma a sampled pixel must stay under to count as letterbox band.
+const BAND_LUMA: f32 = 40.0;
+
+/// The smallest band worth cropping, in frame px.
+const MIN_BAND: i64 = 8;
+
+/// The game's 16:9 content rectangle on `frame` when the game letterboxes a
+/// 16:9 canvas on a screen narrower than 16:9 (a phone in landscape, say):
+/// the rows to trim before [`lay_out_scaled`]. None when the frame is already
+/// 16:9 within 1% or wider than 16:9 (those keep the zone layout), or when
+/// the bands around the 16:9 rectangle are not dark — a game that fills the
+/// screen with its own reflowed layout returns None and needs zone
+/// calibration instead.
+///
+/// The band split tries centred first, then all at the top, then all at the
+/// bottom; the first whose every sampled pixel stays under [`BAND_LUMA`]
+/// wins. Rows are sampled at up to 128 px across.
+pub fn content_rect(frame: &Rgba) -> Option<Rect> {
+    let (w, h) = (frame.w, frame.h);
+    if is_16_9(w, h) || w as f32 / h as f32 > 16.0 / 9.0 {
+        return None;
+    }
+    // A 16:9 rectangle across the full width is this many px shorter.
+    let bars = h as i64 - (w as i64 * 9) / 16;
+    if bars < MIN_BAND {
+        return None;
+    }
+    let dark_row = |y: usize| {
+        let step = (w / 128).max(1);
+        (0..w).step_by(step).all(|x| {
+            let [r, g, b] = frame.rgb(x as i32, y as i32);
+            luma(r, g, b) < BAND_LUMA
+        })
+    };
+    let whole = bars as usize;
+    let half = whole / 2;
+    [(half, whole - half), (whole, 0), (0, whole)]
+        .into_iter()
+        .find(|&(top, bottom)| (0..top).chain(h - bottom..h).all(|y| dark_row(y)))
+        .map(|(top, bottom)| Rect::new(0, top as i32, w as i32, (h - top - bottom) as i32))
 }
 
 /// One axis of a zone: per reference pixel of the zone's span, the two
@@ -197,9 +295,19 @@ fn paint(out: &mut [u8], frame: &Rgba, u: f32, z: &Zone) {
 /// `frame` itself; pixels outside every zone keep to the centre. Pixels past
 /// the frame's edges are black.
 fn lay_out(frame: &Rgba, u: f32) -> Rgba {
+    if let Some(norm) = narrow_norm(frame) {
+        // A phone frame: placed by width, then zone-painted only when the
+        // interface scale is not the reference one.
+        return if u == 1.0 { norm } else { paint_zones(&norm, u) };
+    }
     if u == 1.0 && is_16_9(frame.w, frame.h) {
         return frame.resize(REF_W, REF_H);
     }
+    paint_zones(frame, u)
+}
+
+/// [`lay_out`]'s zone painting, for a frame that is not simply resized.
+fn paint_zones(frame: &Rgba, u: f32) -> Rgba {
     let mut data = vec![0u8; REF_W * REF_H * 4];
     paint(&mut data, frame, u, &zone(0, 0, REF_W as i32, REF_H as i32, Centre, Centre));
     for z in &ZONES {
@@ -222,9 +330,17 @@ fn lay_out_title(frame: &Rgba, u: f32, board: &Rgba) -> Rgba {
 /// layout, with the interface scale they were laid out at: measured on the
 /// frame (see [`ui_scale`], searching near `hint` first), else `hint`, else 1.
 pub fn lay_out_scaled(frame: &Rgba, hint: Option<f32>) -> (Rgba, Option<Rgba>, f32) {
-    let u = ui_scale(frame, hint).or(hint).unwrap_or(1.0);
-    let board = lay_out(frame, u);
-    let title = (u != 1.0).then(|| lay_out_title(frame, u, &board));
+    // A phone frame: measure the scale on the width-placed image, where the
+    // two marks sit at their reference spots.
+    let norm = narrow_norm(frame);
+    let base = norm.as_ref().unwrap_or(frame);
+    let u = ui_scale(base, hint).or(hint).unwrap_or(1.0);
+    let board = match &norm {
+        Some(n) if u == 1.0 => n.clone(),
+        Some(n) => paint_zones(n, u),
+        None => lay_out(frame, u),
+    };
+    let title = (u != 1.0).then(|| lay_out_title(base, u, &board));
     (board, title, u)
 }
 
@@ -379,7 +495,7 @@ impl Strip {
 ///
 /// Measured on the 16:9 frames of trainingdata/s16 and a 21:9 run (u = 1)
 /// and on a 1920 x 1084 run at the smallest setting (u about 0.645).
-fn ui_scale(frame: &Rgba, hint: Option<f32>) -> Option<f32> {
+pub fn ui_scale(frame: &Rgba, hint: Option<f32>) -> Option<f32> {
     let near = hint.map(|h| (-3..=3).map(|n| h + HINT_SPAN / 3.0 * n as f32).collect::<Vec<_>>());
     let (u, a, g) = match near.map(|us| measure(frame, &us)) {
         Some(m) if m.1.score.min(m.2.score) >= MIN_SCORE => m,
@@ -438,6 +554,25 @@ fn measure(frame: &Rgba, us: &[f32]) -> (f32, Found, Found) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The phone's HUD is pinned to the window's top: a 2800 x 1840 frame's
+    /// top bar lands at reference coordinates in `narrow_hud`, while
+    /// `narrow_norm` drops it (it centres the board).
+    #[test]
+    fn narrow_hud_keeps_the_top_bar() {
+        let frame = gradient(2800, 1840);
+        let hud = narrow_hud(&frame).expect("a phone frame has a HUD");
+        assert_eq!((hud.w, hud.h), (REF_W, REF_H));
+        let board = narrow_norm(&frame).expect("a phone frame is narrowed");
+        assert_eq!((board.w, board.h), (REF_W, REF_H));
+        // The hud starts at the frame's top row; the board is the centred
+        // quad, so it starts lower (the gradient's green is the row).
+        assert_eq!(hud.data[1], 0);
+        assert!(board.data[1] > 0);
+        assert_ne!(&hud.data[..], &board.data[..]);
+        // 16:9 frames have no HUD copy.
+        assert!(narrow_hud(&gradient(1920, 1080)).is_none());
+    }
 
     fn gradient(w: usize, h: usize) -> Rgba {
         let data = (0..w * h).flat_map(|i| [(i % w % 256) as u8, (i / w % 256) as u8, 7, 255]).collect();
@@ -513,7 +648,71 @@ mod tests {
         assert_eq!(board.rgb(959, 120), [0, 0, 0], "the title point keeps to the centre on the board");
     }
 
-    /// A reference point's frame pixel at unit scale: the identity at 1920 x
+    /// A phone frame (2800 x 1840, 1.52:1) is placed by width: the reference
+    /// width, centred vertically, so a block at a reference point lands on
+    /// that point, and `frame_point` takes it back to the frame px. A frame
+    /// wider than 16:9 is not narrow.
+    #[test]
+    fn narrow_frame_is_placed_by_width() {
+        let (w, h) = (2800, 1840);
+        assert!(is_narrow(w, h) && !is_16_9(w, h));
+        assert!(!is_narrow(1716, 720) && !is_narrow(1920, 1080));
+        let mut frame = gradient(w, h);
+        // The block the reference point (100, 100) samples on the frame.
+        let ((fx, fy), s) = frame_point((100.0, 100.0), Layout::Board, w, h, 1.0);
+        assert!((s - 2800.0 / 1918.0).abs() < 1e-4, "{s}");
+        let (cx, cy) = (fx.round() as usize, fy.round() as usize);
+        for y in cy - 6..=cy + 6 {
+            for x in cx - 6..=cx + 6 {
+                frame.data[(y * w + x) * 4..][..3].copy_from_slice(&[255, 255, 255]);
+            }
+        }
+        let out = lay_out(&frame, 1.0);
+        assert_eq!((out.w, out.h), (REF_W, REF_H));
+        assert_eq!(out.rgb(100, 100), [255, 255, 255]);
+        // The frame is 1260 reference px tall: 91 of them are cropped above.
+        assert_eq!(narrow_off(2800.0 / 1918.0, h), 91);
+    }
+
+    /// A phone-sized landscape frame, black bands above and below a noisy
+    /// 16:9 canvas, crops to the canvas; the centred split wins over the
+    /// others, and a frame whose bands are not dark, or that fills the
+    /// screen, or that is 16:9 already, or wider, returns None.
+    #[test]
+    fn letterboxed_frame_crops_to_content() {
+        let (w, h) = (2800, 1840);
+        let mut frame = Rgba {
+            w,
+            h,
+            data: (0..w * h)
+                .flat_map(|i| {
+                    let y = i / w;
+                    let canvas = matches!(y, 132..1707);
+                    let v = if canvas { ((i % 29) * 9 % 256) as u8 } else { 0 };
+                    [v, v, v, 255]
+                })
+                .collect(),
+        };
+        let bars = h as i64 - (w as i64 * 9) / 16;
+        assert_eq!(bars, 265);
+        assert_eq!(content_rect(&frame), Some(Rect::new(0, 132, w as i32, (h - 265) as i32)));
+
+        // Not dark: the bands carry game content.
+        for i in 0..w * 4 {
+            frame.data[i * 4] = 200;
+        }
+        assert_eq!(content_rect(&frame), None);
+
+        // The canvas fills the frame.
+        let filled = Rgba { w, h, data: [90u8, 90, 90, 255].repeat(w * h) };
+        assert_eq!(content_rect(&filled), None);
+
+        // 16:9 within 1% and wider than 16:9: never cropped.
+        assert_eq!(content_rect(&gradient(1920, 1080)), None);
+        assert_eq!(content_rect(&gradient(1716, 720)), None);
+    }
+
+
     /// 1080 within 1.5 px, a plain scale at 2560 x 1440, and on a 3440 x 1440
     /// ultrawide the board moved right by its centring offset while Cancel
     /// keeps to the right edge.

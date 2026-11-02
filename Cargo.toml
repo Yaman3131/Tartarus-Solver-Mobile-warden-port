@@ -17,6 +17,15 @@ sha2 = "0.10"
 [build-dependencies]
 embed-resource = "3.0"
 
+# The library the Android client loads through JNI (warden.exe and warden-cli
+# link it as an rlib).
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+# The Android client: the Kotlin side drives the engine through src/jni.rs.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+
 # warden: the window (windows subsystem); warden-cli: the console command line.
 [[bin]]
 name = "warden"
@@ -42,6 +51,12 @@ lto = false
 codegen-units = 16
 panic = "unwind"
 strip = true
+
+# The .so the Android app loads: panics unwind so the JNI layer can catch
+# them (see src/jni.rs) instead of aborting the process.
+[profile.android-release]
+inherits = "release"
+panic = "unwind"
 
 [target."cfg(windows)".dependencies]
 # The window (src/app): egui on wgpu with the Direct3D 12 backend only (glow's OpenGL window stays

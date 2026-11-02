@@ -4,7 +4,8 @@
 //!
 //!   warden-cli solve <board.json | frame.png> [--rollouts N] [--seed S] [--tools id,id]
 //!   warden-cli read <frame.png> [--tools id,id]
-//!   warden-cli capture [--frames N] <title text> <out.png>
+//!   warden-cli layout <frame.png>
+//!   warden-cli capture [--frames N] <title text> <out.png>   (Windows only)
 //!   warden-cli bench [--games N] [--rollouts R] [--seed S] [--threads T]
 //!   warden-cli bench --strategy-only [--set name=value,...] [--hold id,id] [--rerolls N] [--save file] [--against file] [--games N] [--seed S] [--threads T]
 //!   warden-cli --version
@@ -13,7 +14,7 @@ use std::path::Path;
 use std::process::ExitCode;
 use warden::board::{Model, build_state};
 use warden::engine::data::Tool;
-use warden::reader::{read_model, save_png};
+use warden::reader::read_model;
 use warden::solver::bench::{LOW, Solo, bench, is_low, mean_se, spread, strategy_bench, summarize};
 use warden::solver::{Params, TUNED};
 use warden::solver::solve::{instant, solve};
@@ -27,7 +28,7 @@ macro_rules! out {
     }};
 }
 
-const USAGE: &str = "usage: warden-cli solve <board.json | frame.png> [--rollouts N] [--seed S] [--tools id,id] | warden-cli read <frame.png> [--tools id,id] | warden-cli capture [--frames N] <title text> <out.png> | warden-cli bench [--games N] [--rollouts R] [--seed S] [--threads T] | warden-cli bench --strategy-only [--set name=value,...] [--hold id,id] [--rerolls N] [--save file] [--against file] [--games N] [--seed S] [--threads T] | warden-cli --version";
+const USAGE: &str = "usage: warden-cli solve <board.json | frame.png> [--rollouts N] [--seed S] [--tools id,id] | warden-cli read <frame.png> [--tools id,id] | warden-cli layout <frame.png> | warden-cli mark <frame.png> [--tools id,id] [--rollouts N] | warden-cli capture [--frames N] <title text> <out.png> (Windows only) | warden-cli bench [--games N] [--rollouts R] [--seed S] [--threads T] | warden-cli bench --strategy-only [--set name=value,...] [--hold id,id] [--rerolls N] [--save file] [--against file] [--games N] [--seed S] [--threads T] | warden-cli --version";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -36,10 +37,12 @@ fn main() -> ExitCode {
             out!("warden {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Some(cmd @ ("solve" | "read" | "capture" | "bench")) => {
+        Some(cmd @ ("solve" | "read" | "capture" | "layout" | "bench" | "mark")) => {
             let run = match cmd {
                 "solve" => run_solve(&args[1..]),
                 "read" => run_read(&args[1..]),
+                "mark" => run_mark(&args[1..]),
+                "layout" => run_layout(&args[1..]),
                 "bench" => run_bench(&args[1..]),
                 _ => run_capture(&args[1..]),
             };
@@ -77,6 +80,7 @@ fn is_png(file: &str) -> bool {
 /// first visible window whose title contains the text, as the reader takes it.
 /// With `--frames` it grabs N frames through one capture session, as auto read
 /// does, and prints the mean time per frame after the first.
+#[cfg(windows)]
 fn run_capture(args: &[String]) -> Result<ExitCode, String> {
     let (mut frames, mut rest) = (None, Vec::new());
     let mut it = args.iter();
@@ -102,8 +106,89 @@ fn run_capture(args: &[String]) -> Result<ExitCode, String> {
             img
         }
     };
-    save_png(Path::new(out), &img)?;
+    warden::reader::save_png(Path::new(out), &img)?;
     out!("{}x{} saved to {out}", img.w, img.h);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `capture` off Windows: frames come from elsewhere here — `adb exec-out
+/// screencap` off a phone, say.
+#[cfg(not(windows))]
+fn run_capture(_args: &[String]) -> Result<ExitCode, String> {
+    Err("capture needs Windows Graphics Capture; off Windows, take a screenshot instead (adb exec-out screencap)".to_string())
+}
+
+/// `layout <frame.png>`: a calibration aid. Prints the frame's size and aspect,
+/// the 16:9 content rectangle the reader crops a narrower-than-16:9 frame to,
+/// the interface scale it measures, and what the reader makes of the frame:
+/// the screen it classifies, the day counter, the theme, the held tools, the
+/// cells read and the warnings — so a phone screenshot can be tuned against
+/// the reader without running the app.
+fn run_layout(args: &[String]) -> Result<ExitCode, String> {
+    let [file] = &args[..] else {
+        return Err(USAGE.to_string());
+    };
+    let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
+    let img = warden::reader::decode_png_raw(&bytes).map_err(|e| format!("{file} is not a PNG: {e}"))?;
+    let shape = |w: usize, h: usize| {
+        let kind = if warden::reader::layout::is_16_9(w, h) {
+            "16:9"
+        } else if w as f32 / h as f32 > 16.0 / 9.0 {
+            "wider than 16:9"
+        } else {
+            "narrower than 16:9"
+        };
+        format!("{w}x{h} ({:.3}:1, {kind})", w as f32 / h as f32)
+    };
+    out!("{file}: {}", shape(img.w, img.h));
+    let img = match warden::reader::layout::content_rect(&img) {
+        Some(r) => {
+            out!("letterbox crop: {r:?} -> {}", shape(r.w as usize, r.h as usize));
+            img.crop(r)
+        }
+        None => {
+            out!("no letterbox crop");
+            img
+        }
+    };
+    match warden::reader::layout::ui_scale(&img, None) {
+        Some(u) => out!("interface scale: {u}"),
+        None => out!("interface scale: not measured (the gate icon or the back arrow was not found)"),
+    }
+    let (board, title, _) = warden::reader::layout::lay_out_scaled(&img, None);
+    let title = title.as_ref().unwrap_or(&board);
+    let panels = warden::reader::panels::read_panels_titled(&board, title);
+    out!("screen: {}", panels.screen.label());
+    let days = panels.days.map(|d| d.to_string()).unwrap_or_else(|| "not read".into());
+    out!("days until riot: {days}");
+    let theme = panels.theme.map(|t| t.to_string()).unwrap_or_else(|| "not read".into());
+    out!("theme: {theme}");
+    let held = panels.held.clone().unwrap_or_default();
+    let held = if held.is_empty() { "not read".into() } else { held.iter().map(|t| t.key()).collect::<Vec<_>>().join(",") };
+    out!("held tools: {held}");
+    // Only Iron Law runs past 20 days.
+    let run_days = if panels.days.is_some_and(|left| i64::from(left) > warden::reader::model::RUN_DAYS) {
+        warden::reader::model::iron_law_days()
+    } else {
+        warden::reader::model::RUN_DAYS
+    };
+    let (model, warnings) = warden::reader::model::to_model(
+        &warden::reader::scene::read_scene(&board),
+        &panels,
+        &panels.held.clone().unwrap_or_default(),
+        None,
+        run_days,
+    );
+    out!("cells read: {}", model.cells.len());
+    match warnings.len() {
+        0 => out!("no warnings"),
+        n => {
+            out!("{n} warnings:");
+            for w in &warnings {
+                out!("  {w}");
+            }
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -266,6 +351,38 @@ fn run_read(args: &[String]) -> Result<ExitCode, String> {
         eprintln!("{w}");
     }
     out!("{}", serde_json::to_string_pretty(&model).map_err(|e| e.to_string())?);
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Where the mark for the advised move lands on `frame.png`, as the overlay
+/// draws it: centre x, y and half sizes in the frame's own pixels.
+fn run_mark(args: &[String]) -> Result<ExitCode, String> {
+    let mut file = None;
+    let mut held = Vec::new();
+    let mut rollouts = 400usize;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--tools" => held = tools(it.next())?,
+            "--rollouts" => rollouts = number("--rollouts", it.next())?,
+            _ if file.is_none() && !arg.starts_with("--") => file = Some(arg),
+            _ => return Err(format!("unexpected argument {arg}; {USAGE}")),
+        }
+    }
+    let path = file.ok_or(USAGE)?;
+    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {path}: {e}"))?;
+    let frame = warden::reader::decode_png_raw(&bytes)?;
+    let mut session = warden::app::session::Session::new(rollouts, held, None, None);
+    session.set_narrow_ok(true);
+    session.read_live(frame);
+    session.wait();
+    if let Some(a) = session.advice() {
+        out!("advice: {}", a.label);
+    }
+    match session.mark() {
+        Some((x, y, w, h)) => out!("centre {x:.1}, {y:.1} half {w:.1} x {h:.1} (frame px)"),
+        None => out!("no mark: the advice is not a click on the read screen"),
+    }
     Ok(ExitCode::SUCCESS)
 }
 

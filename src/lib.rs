@@ -7,3 +7,7 @@ pub mod board;
 pub mod engine;
 pub mod solver;
 pub mod reader;
+
+/// The Kotlin client's entry points (see `src/jni.rs`); only on Android.
+#[cfg(target_os = "android")]
+pub mod jni;

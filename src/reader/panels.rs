@@ -473,10 +473,19 @@ pub fn read_panels(img: &Rgba) -> Panels {
 /// [`INCIDENT`], [`RIOT`] and [`REROLLS`] read from `title`, the same frame in the title layout (see
 /// [`super::layout::lay_out_scaled`]).
 pub fn read_panels_titled(img: &Rgba, title: &Rgba) -> Panels {
+    read_panels_titled_days(img, title, img)
+}
+
+/// [`read_panels_titled`], with the days counter read from `days` instead:
+/// a phone frame pins its top bar to the window's top while the board and
+/// the cards sit at the centre, so the counter is not where the board frame
+/// puts it (see `layout::narrow_hud`).
+pub fn read_panels_titled_days(img: &Rgba, title: &Rgba, days_img: &Rgba) -> Panels {
     let d = data();
     // Every fixed region is read at once, whether the screen needs it or not.
     const REGIONS: [(Rect, f32); 14] = [DAYS, TITLE, HEADING, CARDS, TARGET, CANCEL, BANNER, DIALOG, INCIDENT, THEME, OBJECTIVE, STATUS, RIOT, NAMES];
     let mut imgs = [img; 14];
+    imgs[0] = days_img;
     for i in [1, 8, 12] {
         imgs[i] = title;
     }
