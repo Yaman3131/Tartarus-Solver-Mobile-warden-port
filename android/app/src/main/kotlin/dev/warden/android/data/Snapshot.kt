@@ -27,6 +27,15 @@ data class Snapshot(
         val screen: String,
         val daysLeft: Int?,
         val warnings: List<Warning>,
+        /** The board the reader installed, for the live board and its corrections. */
+        val model: LiveModel?,
+    )
+
+    /** The board the reader installed, the mirror of `Model` in `src/board.rs`. */
+    data class LiveModel(
+        val day: Int,
+        val warden: Int,
+        val cells: List<Cell>,
     )
 
     data class Warning(val cell: Int, val kind: String, val text: String)
@@ -60,6 +69,14 @@ data class Snapshot(
                             text = w.optString("text"),
                         )
                     } ?: emptyList(),
+                    model = r.optJSONObject("model")?.let { m ->
+                        LiveModel(
+                            day = m.optInt("day"),
+                            warden = m.optInt("warden"),
+                            cells = m.optJSONArray("cells")?.mapObjects { Cell.fromJson(it) }
+                                ?: emptyList(),
+                        )
+                    },
                 )
             }
             Snapshot(

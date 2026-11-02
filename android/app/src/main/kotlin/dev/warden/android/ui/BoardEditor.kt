@@ -162,7 +162,7 @@ private fun CellTile(
     }
 }
 
-private fun Cell.summary(): String = when (this) {
+internal fun Cell.summary(): String = when (this) {
     is Cell.Office -> "Room"
     is Cell.Sealed -> "sealed" + mark()
     is Cell.Empty -> "open" + mark()

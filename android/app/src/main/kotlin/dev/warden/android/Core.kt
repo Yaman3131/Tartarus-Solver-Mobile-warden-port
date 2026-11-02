@@ -73,6 +73,9 @@ object Core {
         // path handles it (P0: width-scaled, centered).
         WardenNative.wardenSessionSetNarrowOk(session, true)
         WardenNative.wardenSessionSetTheme(session, theme ?: -1)
+        // Keep each run's reads, advice and corrections under filesDir/runs,
+        // for the run log viewer (the desktop has the same switch on).
+        WardenNative.wardenSessionSetRunLog(session, true)
         watch = WardenNative.wardenWatchNew()
 
         scope.launch { pollLoop() }
@@ -104,11 +107,35 @@ object Core {
     fun setBoard(board: BoardState) {
         if (session == 0L) return
         val r = WardenNative.wardenSessionSetBoard(session, board.toJson())
-        error.value = runCatching {
-            val o = JSONObject(r)
-            if (o.has("error")) o.getString("error") else null
-        }.getOrNull()
+        error.value = resultError(r)
     }
+
+    /**
+     * Corrects screen cell [cell] (2–16) on the reading on show and re-solves,
+     * as clicking the cell does on the desktop. [kind] is "locked" or "empty";
+     * "inmate" also takes [beast] and [tier] (0 Normal … 4 Ultimate).
+     */
+    fun editCell(cell: Int, kind: String, beast: String? = null, tier: Int? = null) {
+        if (session == 0L) return
+        val edit = JSONObject().put("kind", kind)
+        if (kind == "inmate") {
+            edit.put("beast", beast ?: "lion")
+            edit.put("tier", tier ?: 0)
+        }
+        error.value = resultError(WardenNative.wardenSessionEditCell(session, cell, edit.toString()))
+    }
+
+    /** Adds or removes the incident marker on screen cell [cell] and re-solves. */
+    fun setMarker(cell: Int, on: Boolean) {
+        if (session == 0L) return
+        error.value = resultError(WardenNative.wardenSessionSetMarker(session, cell, on))
+    }
+
+    /** The error a JNI JSON reply carries, or null. */
+    private fun resultError(reply: String?): String? = runCatching {
+        val o = JSONObject(reply ?: return null)
+        if (o.has("error")) o.getString("error") else null
+    }.getOrNull()
 
     fun setRollouts(n: Int) {
         rollouts = n

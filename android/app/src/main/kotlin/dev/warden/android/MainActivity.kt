@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -29,16 +30,20 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.warden.android.data.BoardState
 import dev.warden.android.service.WardenService
 import dev.warden.android.ui.AdvicePanel
 import dev.warden.android.ui.BoardEditor
+import dev.warden.android.ui.LiveBoard
+import dev.warden.android.ui.RunLogPanel
 
 /**
- * The app: the hand board editor next to the advice, and a button that
- * starts reading the game itself (MediaProjection + ML Kit).
+ * The app: the board the reader installed (with its corrections) or the hand
+ * board editor, next to the advice or the run log, and a button that starts
+ * reading the game itself (MediaProjection + ML Kit).
  */
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,6 +68,10 @@ fun WardenApp() {
     var rollouts by remember { mutableIntStateOf(Core.rollouts) }
     // The service owns the capture; the button follows it across recreation.
     var reading by remember { mutableStateOf(WardenService.running) }
+    // Left: the board read from the game, or the hand board. Right: the
+    // advice, or the run log. With the capture off, the editor comes first.
+    var live by remember { mutableStateOf(WardenService.running) }
+    var showLog by remember { mutableStateOf(false) }
 
     // The editor's board, installed as the reading on show while no frame
     // read is in; a frame read takes over from it.
@@ -132,19 +141,70 @@ fun WardenApp() {
                         Text("Read a picture")
                     }
                 }
-                BoardEditor(
-                    board = board,
-                    rollouts = rollouts,
-                    onRollouts = {
-                        rollouts = it
-                        Core.setRollouts(it)
-                    },
-                    onChange = { board = it },
-                )
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = live,
+                        onClick = { live = true },
+                        label = { Text("Live board") },
+                    )
+                    FilterChip(
+                        selected = !live,
+                        onClick = { live = false },
+                        label = { Text("Hand board") },
+                    )
+                }
+
+                val read = snapshot?.reading
+                if (live) {
+                    val model = read?.model
+                    if (model != null) {
+                        LiveBoard(
+                            model = model,
+                            warnings = read.warnings,
+                            onEdit = { cell, kind, beast, tier -> Core.editCell(cell, kind, beast, tier) },
+                            onMarker = { cell, on -> Core.setMarker(cell, on) },
+                        )
+                    } else {
+                        Text(
+                            "Read the game (or a picture) to see its board here. " +
+                                "The hand board is on the other tab.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = Color(0xFF8A8A96),
+                        )
+                    }
+                } else {
+                    BoardEditor(
+                        board = board,
+                        rollouts = rollouts,
+                        onRollouts = {
+                            rollouts = it
+                            Core.setRollouts(it)
+                        },
+                        onChange = { board = it },
+                    )
+                }
             }
-            Column(Modifier.weight(0.8f)) {
-                Text("Advice", style = MaterialTheme.typography.titleMedium)
-                AdvicePanel(snapshot, error)
+
+            Column(Modifier.weight(0.8f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = !showLog,
+                        onClick = { showLog = false },
+                        label = { Text("Advice") },
+                    )
+                    FilterChip(
+                        selected = showLog,
+                        onClick = { showLog = true },
+                        label = { Text("Run log") },
+                    )
+                }
+                if (showLog) {
+                    RunLogPanel()
+                } else {
+                    Text("Advice", style = MaterialTheme.typography.titleMedium)
+                    AdvicePanel(snapshot, error)
+                }
             }
         }
     }
